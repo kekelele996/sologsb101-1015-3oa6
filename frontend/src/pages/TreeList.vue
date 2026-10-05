@@ -12,6 +12,7 @@ import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import StatBadge from '@/components/common/StatBadge.vue'
 import VigorTag from '@/components/common/VigorTag.vue'
 import { useTreeStore } from '@/stores/treeStore'
+import { latestPendingReason } from '@/utils/followUp'
 import {
   PROTECT_LEVEL_OPTIONS,
   TREE_SPECIES_CANDIDATES,
@@ -19,7 +20,6 @@ import {
   type Tree,
   type TreeDraft,
 } from '@/types/tree'
-
 const router = useRouter()
 const treeStore = useTreeStore()
 
@@ -64,8 +64,25 @@ const totals = computed(() => {
     return vigor === '衰弱' || vigor === '濒危'
   }).length
   const overdue = list.reduce((acc, tree) => acc + treeStore.statOf(tree.id).overdueCount, 0)
-  return { level1, weak, overdue }
+  const linkedPending = list.reduce((acc, tree) => acc + treeStore.statOf(tree.id).linkedPendingCount, 0)
+  return { level1, weak, overdue, linkedPending }
 })
+
+/** 隔了两次复评还没收掉的挂账待办（档案页单列跟踪） */
+const overdueLinkedRows = computed(() => treeStore.overdueLinkedTodos)
+
+const treeCodeById = computed<Record<string, string>>(() =>
+  Object.fromEntries(treeStore.trees.map((tree) => [tree.id, `${tree.code} ${tree.species}`]))
+)
+
+function goMeasures(): void {
+  void router.push('/measures')
+}
+
+/** 该古树最近一次复评针对未收挂账写下的未落实原因 */
+function pendingReasonOf(treeId: string): string {
+  return latestPendingReason(treeId, treeStore.measures, treeStore.reviews)
+}
 
 onMounted(() => {
   void treeStore.loadAll()
@@ -149,6 +166,14 @@ function handleFilterChange(key: string, value: string): void {
       <StatBadge label="在档古树" :value="treeStore.trees.length" suffix="株" tone="primary" icon="Histogram" />
       <StatBadge label="一级古树" :value="totals.level1" suffix="株" tone="success" icon="DataLine" />
       <StatBadge label="衰弱/濒危" :value="totals.weak" suffix="株" tone="danger" icon="Warning" hint="最新长势为衰弱或濒危的古树" />
+      <StatBadge
+        label="挂账待办未收"
+        :value="totals.linkedPending"
+        suffix="项"
+        :tone="totals.linkedPending > 0 ? 'warning' : 'success'"
+        icon="Warning"
+        hint="由长势复评挂到措施台账、还没标记完成的待办"
+      />
       <StatBadge label="加固件超期" :value="totals.overdue" suffix="件" tone="warning" icon="Warning" hint="超过检查周期未检查的加固件" />
       <StatBadge label="筛选结果" :value="rows.length" suffix="株" tone="info" icon="PieChart" size="small" />
     </div>
@@ -239,8 +264,18 @@ function handleFilterChange(key: string, value: string): void {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="待办措施" width="110" align="right">
-          <template #default="{ row }">{{ treeStore.statOf(row.id).pendingMeasureCount }} 项</template>
+        <el-table-column label="待办措施" width="130" align="right">
+          <template #default="{ row }">
+            <div class="cell-stack" style="align-items: flex-end">
+              <span>{{ treeStore.statOf(row.id).pendingMeasureCount }} 项</span>
+              <span
+                v-if="treeStore.statOf(row.id).overdueLinkedCount > 0"
+                class="cell-warn"
+              >
+                含 {{ treeStore.statOf(row.id).overdueLinkedCount }} 项跨两次复评
+              </span>
+            </div>
+          </template>
         </el-table-column>
         <el-table-column label="加固件超期" width="120" align="right">
           <template #default="{ row }">
@@ -263,6 +298,84 @@ function handleFilterChange(key: string, value: string): void {
           </template>
         </el-table-column>
       </el-table>
+    </el-card>
+
+    <el-card shadow="never" class="overdue-card">
+      <template #header>
+        <div class="card-header">
+          <span class="card-header__title">
+            隔了两次复评还没收掉的挂账待办
+            <el-tag v-if="overdueLinkedRows.length > 0" type="danger" effect="dark" size="small" style="margin-left: 8px">
+              {{ overdueLinkedRows.length }} 项
+            </el-tag>
+          </span>
+          <el-button type="primary" plain @click="goMeasures">前往措施台账落实</el-button>
+        </div>
+      </template>
+      <el-alert
+        v-if="overdueLinkedRows.length > 0"
+        type="error"
+        show-icon
+        :closable="false"
+        class="mb-14"
+        title="下列待办由长势复评挂出，来源复评之后又做了 2 次及以上复评仍未完成，需要尽快落实并在台账标记完成。"
+      />
+      <el-table
+        v-if="overdueLinkedRows.length > 0"
+        :data="overdueLinkedRows"
+        row-key="measure.id"
+        stripe
+      >
+        <el-table-column label="古树" min-width="190">
+          <template #default="{ row }">
+            <el-link type="primary" @click="goSurveys({ id: row.measure.treeId } as Tree)">
+              {{ treeCodeById[row.measure.treeId] ?? '（古树已删除）' }}
+            </el-link>
+          </template>
+        </el-table-column>
+        <el-table-column label="挂账措施" width="130">
+          <template #default="{ row }">
+            <el-tag type="warning" effect="light">{{ row.measure.type }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="当前状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="row.measure.state === '实施中' ? 'warning' : 'info'" effect="dark" size="small">
+              {{ row.measure.state }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="挂账自复评" width="200">
+          <template #default="{ row }">
+            <div class="cell-stack">
+              <span>{{ row.sourceReview?.date ?? '（复评已删除）' }}</span>
+              <span v-if="row.sourceReview" class="cell-sub">当时长势：{{ row.sourceReview.vigor }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="已隔复评" width="110" align="center">
+          <template #default="{ row }">
+            <el-tag type="danger" effect="dark" size="small">{{ row.laterReviews }} 次</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="最近一次未落实原因" min-width="260">
+          <template #default="{ row }">
+            <span v-if="pendingReasonOf(row.measure.treeId) !== ''">
+              {{ pendingReasonOf(row.measure.treeId) }}
+            </span>
+            <span v-else class="cell-sub">未填写（下次复评保存时将被强制要求补充）</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="120" fixed="right">
+          <template #default>
+            <el-button link type="primary" size="small" @click="goMeasures">去台账完成</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty
+        v-else
+        description="没有隔了两次复评仍未收掉的挂账待办，复评后续措施落实情况良好。"
+      />
     </el-card>
 
     <el-dialog
@@ -356,5 +469,13 @@ function handleFilterChange(key: string, value: string): void {
 .cell-warn {
   color: #c0392b;
   font-weight: 600;
+}
+
+.overdue-card {
+  margin-top: 16px;
+}
+
+.mb-14 {
+  margin-bottom: 14px;
 }
 </style>

@@ -11,6 +11,7 @@ import {
   initDatabase,
   putMeasure,
   removeMeasure,
+  ROW_REVISION,
 } from '../utils/db'
 import { nowIso, uuid } from '../utils/id'
 import { useTreeStore } from './treeStore'
@@ -93,9 +94,11 @@ export const useMeasureStore = defineStore('measure', () => {
       material: draft.material.trim(),
       operator: draft.operator.trim(),
       state: draft.state,
+      // 台账内自行登记的措施不挂任何复评
+      sourceReviewId: '',
       createdAt: stamp,
       updatedAt: stamp,
-      revision: 2,
+      revision: ROW_REVISION,
     }
     await putMeasure(row)
     revision.value += 1

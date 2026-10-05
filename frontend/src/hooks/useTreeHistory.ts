@@ -54,9 +54,9 @@ export function buildHistory(
       key: `measure-${row.id}`,
       kind: 'measure',
       date: row.date,
-      title: `复壮措施 · ${row.type}`,
+      title: `复壮措施 · ${row.type}${row.sourceReviewId !== '' ? '（复评挂账待办）' : ''}`,
       detail: `材料：${row.material}；负责人：${row.operator}`,
-      badge: row.state,
+      badge: row.sourceReviewId !== '' && row.state !== '已完成' ? `挂账·${row.state}` : row.state,
     })
   })
   supports.forEach((row) => {

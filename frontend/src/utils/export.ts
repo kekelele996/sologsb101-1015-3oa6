@@ -11,6 +11,7 @@ import type { Support } from '../types/support'
 import type { Review } from '../types/review'
 import { stampSuffix } from './id'
 import { isSupportOverdue, overdueDays } from './dimension'
+import { isOpenLinkedMeasure, overdueLinkedMeasures } from './followUp'
 
 /** 触发浏览器下载 */
 export function download(filename: string, content: string, mime: string): void {
@@ -100,6 +101,8 @@ export function buildTreeCsv(
     '立地状况',
     '措施总数',
     '已完成措施',
+    '复评挂账未收',
+    '跨两次复评未收',
     '最近复壮日期',
     '加固件数',
     '超期未检查',
@@ -134,6 +137,8 @@ export function buildTreeCsv(
         latest === null ? '—' : latest.siteNote,
         treeMeasures.length,
         treeMeasures.filter((row) => row.state === '已完成').length,
+        treeMeasures.filter((row) => isOpenLinkedMeasure(row)).length,
+        overdueLinkedMeasures(tree.id, measures, reviews).length,
         tree.lastMeasureDate === '' ? '—' : tree.lastMeasureDate,
         treeSupports.length,
         overdue.length === 0 ? '无' : overdue.map((row) => `${row.type}超期 ${overdueDays(row.lastCheckDate, row.checkCycleMon)} 天`).join('；'),
@@ -184,13 +189,17 @@ export function buildTodoText(
   const lines: string[] = [`【古树名木复壮养护待办】共 ${trees.length} 株在档`]
   trees.forEach((tree) => {
     const pending = measures.filter((row) => row.treeId === tree.id && row.state !== '已完成').length
+    const linkedPending = measures.filter(
+      (row) => row.treeId === tree.id && isOpenLinkedMeasure(row),
+    ).length
+    const overdueLinked = overdueLinkedMeasures(tree.id, measures, reviews).length
     const overdue = supports.filter(
       (row) => row.treeId === tree.id && isSupportOverdue(row.lastCheckDate, row.checkCycleMon),
     ).length
     const treeReviews = reviews.filter((row) => row.treeId === tree.id).sort((a, b) => a.date.localeCompare(b.date))
     const latest = treeReviews.length > 0 ? treeReviews[treeReviews.length - 1] : null
     lines.push(
-      `· ${tree.code} ${tree.species}（${tree.protectLevel}，树龄 ${tree.ageYears} 年）待办措施 ${pending} 项，超期加固件 ${overdue} 件，最新长势 ${
+      `· ${tree.code} ${tree.species}（${tree.protectLevel}，树龄 ${tree.ageYears} 年）待办措施 ${pending} 项（其中复评挂账 ${linkedPending} 项、跨两次复评未收 ${overdueLinked} 项），超期加固件 ${overdue} 件，最新长势 ${
         latest === null ? '未复评' : `${latest.vigor}（${latest.trend}）`
       }`,
     )

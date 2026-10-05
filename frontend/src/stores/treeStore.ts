@@ -12,6 +12,7 @@ import type { Measure } from '../types/measure'
 import type { Support } from '../types/support'
 import type { Review, Trend, Vigor } from '../types/review'
 import { VIGOR_NEED_FOLLOW_UP } from '../types/review'
+import { isOpenLinkedMeasure, overdueLinkedMeasures, type OverdueLinkedMeasure } from '../utils/followUp'
 import {
   DB_SCHEMA_VERSION,
   ROW_REVISION,
@@ -54,6 +55,10 @@ export interface TreeStat {
   measureCount: number
   doneMeasureCount: number
   pendingMeasureCount: number
+  /** 由长势复评挂出、尚未收掉（非「已完成」）的待办数 */
+  linkedPendingCount: number
+  /** 挂账待办隔了 ≥2 次复评仍未收掉的数量 */
+  overdueLinkedCount: number
   supportCount: number
   /** 超周期未检查的加固件数 */
   overdueCount: number
@@ -94,6 +99,8 @@ const EMPTY_STAT: Omit<TreeStat, 'treeId'> = {
   measureCount: 0,
   doneMeasureCount: 0,
   pendingMeasureCount: 0,
+  linkedPendingCount: 0,
+  overdueLinkedCount: 0,
   supportCount: 0,
   overdueCount: 0,
   reviewCount: 0,
@@ -136,6 +143,8 @@ export const useTreeStore = defineStore('tree', () => {
         .filter((row) => row.treeId === tree.id)
         .sort((a, b) => a.date.localeCompare(b.date))
       const latestReview = treeReviews.length > 0 ? treeReviews[treeReviews.length - 1] : null
+      const linkedPending = treeMeasures.filter((row) => isOpenLinkedMeasure(row)).length
+      const overdueLinked = overdueLinkedMeasures(tree.id, measures.value, reviews.value).length
       const lean = latest === null ? 'safe' : leanLevel(latest.leanDeg)
       result[tree.id] = {
         treeId: tree.id,
@@ -155,6 +164,8 @@ export const useTreeStore = defineStore('tree', () => {
         measureCount: treeMeasures.length,
         doneMeasureCount: treeMeasures.filter((row) => row.state === '已完成').length,
         pendingMeasureCount: treeMeasures.filter((row) => row.state !== '已完成').length,
+        linkedPendingCount: linkedPending,
+        overdueLinkedCount: overdueLinked,
         supportCount: treeSupports.length,
         overdueCount: treeSupports.filter((row) => isSupportOverdue(row.lastCheckDate, row.checkCycleMon)).length,
         reviewCount: treeReviews.length,
@@ -187,6 +198,11 @@ export const useTreeStore = defineStore('tree', () => {
 
   const overdueSupports = computed<Support[]>(() =>
     supports.value.filter((row) => isSupportOverdue(row.lastCheckDate, row.checkCycleMon))
+  )
+
+  /** 全部「隔了两次复评还没收掉」的挂账待办（含来源复评信息），供古树档案页单列 */
+  const overdueLinkedTodos = computed<OverdueLinkedMeasure[]>(() =>
+    overdueLinkedMeasures(undefined, measures.value, reviews.value)
   )
 
   function statOf(treeId: string): TreeStat {
@@ -316,6 +332,7 @@ export const useTreeStore = defineStore('tree', () => {
     stats,
     visibleTrees,
     overdueSupports,
+    overdueLinkedTodos,
     statOf,
     loadAll,
     selectTree,

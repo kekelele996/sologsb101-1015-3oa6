@@ -26,6 +26,12 @@ export interface Measure {
   operator: string
   /** 实施状态 */
   state: MeasureState
+  /**
+   * 挂账来源的长势复评 id：
+   * 复评保存时选择后续措施类型会自动挂一条同类型待办，此处记录它对应哪次复评；
+   * 空串表示在措施台账里自行登记、与复评无关。
+   */
+  sourceReviewId: string
   createdAt: string
   updatedAt: string
   revision: number

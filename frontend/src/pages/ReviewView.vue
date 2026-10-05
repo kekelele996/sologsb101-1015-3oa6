@@ -17,7 +17,18 @@ import { useReviewStore } from '@/stores/reviewStore'
 import { useTreeStore } from '@/stores/treeStore'
 import { DB_NAME, DB_SCHEMA_VERSION, db, exportSnapshot, importSnapshot, resetDatabase } from '@/utils/db'
 import { exportSnapshotJson, exportTreeCsvFile, parseSnapshot } from '@/utils/export'
-import { TREND_OPTIONS, VIGOR_OPTIONS, VIGOR_NEED_FOLLOW_UP, type Review, type ReviewDraft, type Trend, type Vigor } from '@/types/review'
+import { isOpenLinkedMeasure, measuresOfReview } from '@/utils/followUp'
+import {
+  FOLLOW_UP_TYPE_NONE,
+  TREND_OPTIONS,
+  VIGOR_OPTIONS,
+  VIGOR_NEED_FOLLOW_UP,
+  type Review,
+  type ReviewDraft,
+  type Trend,
+  type Vigor,
+} from '@/types/review'
+import { MEASURE_TYPE_OPTIONS, type Measure } from '@/types/measure'
 
 const router = useRouter()
 const treeStore = useTreeStore()
@@ -38,9 +49,41 @@ const form = reactive<ReviewDraft>({
   trend: '持平',
   conclusion: '',
   followUp: '',
+  followUpType: FOLLOW_UP_TYPE_NONE,
+  pendingReason: '',
 })
 
 const needFollowUp = computed<boolean>(() => VIGOR_NEED_FOLLOW_UP.includes(form.vigor))
+
+/**
+ * 该株古树当前仍未收掉的复评挂账待办。
+ * 编辑复评时排除本次复评自己挂出的那条（它是否落实由本次保存结果决定）。
+ */
+const blockingMeasures = computed<Measure[]>(() => {
+  if (form.treeId === '') return []
+  return treeStore.measures.filter(
+    (row) =>
+      row.treeId === form.treeId &&
+      isOpenLinkedMeasure(row) &&
+      row.sourceReviewId !== editingId.value,
+  )
+})
+
+/** 本次复评已挂出的待办（含已完成留痕） */
+const linkedMeasuresOfEditing = computed<Measure[]>(() =>
+  editingId.value === null ? [] : measuresOfReview(editingId.value, treeStore.measures)
+)
+
+const linkedPendingCount = computed<number>(() =>
+  treeStore.measures.filter((row) => isOpenLinkedMeasure(row)).length
+)
+
+/** 跨两次复评仍未收掉的挂账待办总数，用于顶部提醒 */
+const overdueLinkedCount = computed<number>(() => treeStore.overdueLinkedTodos.length)
+
+const reviewDateById = computed<Record<string, string>>(() =>
+  Object.fromEntries(treeStore.reviews.map((row) => [row.id, row.date]))
+)
 
 const rules = computed<FormRules<ReviewDraft>>(() => ({
   treeId: [{ required: true, message: '请选择古树', trigger: 'change' }],
@@ -51,6 +94,13 @@ const rules = computed<FormRules<ReviewDraft>>(() => ({
   followUp: needFollowUp.value
     ? [{ required: true, message: '长势为衰弱 / 濒危时必须填写后续措施', trigger: 'blur' }]
     : [],
+  followUpType: needFollowUp.value
+    ? [{ required: true, message: '请选择后续措施类型，保存后自动挂到措施台账', trigger: 'change' }]
+    : [],
+  pendingReason:
+    blockingMeasures.value.length > 0
+      ? [{ required: true, message: '该古树还有挂账待办未收掉，必须写明未落实原因', trigger: 'blur' }]
+      : [],
 }))
 
 const treeLabel = computed<Record<string, string>>(() =>
@@ -99,6 +149,8 @@ function openCreate(): void {
     trend: '持平' as Trend,
     conclusion: '',
     followUp: '',
+    followUpType: FOLLOW_UP_TYPE_NONE,
+    pendingReason: '',
   })
   dialogVisible.value = true
 }
@@ -112,6 +164,8 @@ function openEdit(row: Review): void {
     trend: row.trend,
     conclusion: row.conclusion,
     followUp: row.followUp,
+    followUpType: row.followUpType,
+    pendingReason: row.pendingReason,
   })
   dialogVisible.value = true
 }
@@ -120,7 +174,8 @@ async function handleSubmit(): Promise<void> {
   if (formRef.value === undefined) return
   const valid = await formRef.value.validate().catch(() => false)
   if (!valid) return
-  const check = reviewStore.validate({ ...form })
+  const context = { blockingCount: blockingMeasures.value.length }
+  const check = reviewStore.validate({ ...form }, context)
   if (!check.ok) {
     ElMessage.error(check.message)
     return
@@ -128,10 +183,10 @@ async function handleSubmit(): Promise<void> {
   submitting.value = true
   try {
     if (editingId.value === null) {
-      const row = await reviewStore.createReview({ ...form })
+      const row = await reviewStore.createReview({ ...form }, context)
       if (row !== null) ElMessage.success(`已登记 ${row.date} 的长势复评：${row.vigor}`)
     } else {
-      const result = await reviewStore.updateReview(editingId.value, { ...form })
+      const result = await reviewStore.updateReview(editingId.value, { ...form }, context)
       if (!result.ok) {
         ElMessage.error(result.message)
         return
@@ -237,6 +292,22 @@ function handleFilterChange(key: string, value: string): void {
         hint="最新长势为衰弱 / 濒危但未填写后续措施的古树数量"
       />
       <StatBadge
+        label="挂账待办未收"
+        :value="linkedPendingCount"
+        suffix="项"
+        :tone="linkedPendingCount > 0 ? 'warning' : 'success'"
+        icon="Warning"
+        hint="由复评自动挂到措施台账、状态还不是「已完成」的待办数"
+      />
+      <StatBadge
+        label="跨两次复评未收"
+        :value="overdueLinkedCount"
+        suffix="项"
+        :tone="overdueLinkedCount > 0 ? 'danger' : 'success'"
+        icon="Warning"
+        hint="来源复评之后又做了 ≥ 2 次复评，待办仍未标记完成（古树档案页单列跟踪）"
+      />
+      <StatBadge
         label="数据结构版本"
         :value="`v${DB_SCHEMA_VERSION}`"
         :suffix="`· ${DB_NAME}`"
@@ -253,7 +324,17 @@ function handleFilterChange(key: string, value: string): void {
       :closable="false"
       class="mb-14"
       :title="`有 ${reviewStore.followUpMissing} 株古树的最新复评为衰弱 / 濒危但未填写后续措施`"
-      description="请到复评列表中补充后续措施（换土、透气、树洞修补、加固等），否则无法通过复评校验。"
+      description="请到复评列表中补充后续措施与措施类型（换土、施肥、透气、树洞修补、病虫害防治），保存后会自动挂到措施台账跟踪落实。"
+    />
+
+    <el-alert
+      v-if="overdueLinkedCount > 0"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="mb-14"
+      :title="`有 ${overdueLinkedCount} 项挂账待办隔了两次复评仍未收掉`"
+      description="请到「古树档案」页查看清单，并在「复壮措施」台账把对应措施推进到「已完成」后待办才会收掉。"
     />
 
     <el-row :gutter="14">
@@ -358,10 +439,36 @@ function handleFilterChange(key: string, value: string): void {
                 <span>{{ row.conclusion }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="后续措施" min-width="240">
+            <el-table-column label="后续措施 / 挂账" min-width="280">
               <template #default="{ row }">
-                <el-tag v-if="row.followUp === ''" type="info" size="small" effect="plain">无需填写</el-tag>
-                <span v-else>{{ row.followUp }}</span>
+                <div v-if="row.followUp !== ''" class="cell-stack">
+                  <span>{{ row.followUp }}</span>
+                  <span class="cell-sub">
+                    <el-tag v-if="row.followUpType !== ''" type="warning" size="small" effect="light">
+                      挂账：{{ row.followUpType }}
+                    </el-tag>
+                    <el-tag v-else type="info" size="small" effect="plain">未挂台账</el-tag>
+                    <template v-if="measuresOfReview(row.id, treeStore.measures).length > 0">
+                      <el-tag
+                        v-for="measure in measuresOfReview(row.id, treeStore.measures)"
+                        :key="measure.id"
+                        :type="measure.state === '已完成' ? 'success' : measure.state === '实施中' ? 'warning' : 'info'"
+                        size="small"
+                        effect="plain"
+                        class="linked-tag"
+                      >
+                        台账待办：{{ measure.state }}
+                      </el-tag>
+                    </template>
+                  </span>
+                </div>
+                <el-tag v-else type="info" size="small" effect="plain">无需填写</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="未落实原因" min-width="200">
+              <template #default="{ row }">
+                <span v-if="row.pendingReason !== ''">{{ row.pendingReason }}</span>
+                <span v-else class="cell-sub">—</span>
               </template>
             </el-table-column>
             <el-table-column label="操作" width="140" fixed="right">
@@ -459,12 +566,64 @@ function handleFilterChange(key: string, value: string): void {
             :placeholder="needFollowUp ? '长势为衰弱 / 濒危，必填：如 2026 年秋季安排树洞修补与树盘透气改造' : '可选：填写下一步养护安排'"
           />
         </el-form-item>
+        <el-form-item label="措施类型挂账" prop="followUpType">
+          <el-select
+            v-model="form.followUpType"
+            style="width: 100%"
+            :placeholder="needFollowUp ? '请选择后续措施类型' : '可选：选择后保存自动挂台账待办'"
+            clearable
+            @clear="form.followUpType = ''"
+          >
+            <el-option
+              v-for="item in MEASURE_TYPE_OPTIONS"
+              :key="item"
+              :value="item"
+              :label="`${item}（保存后挂到措施台账）`"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="blockingMeasures.length > 0" label="未落实原因" prop="pendingReason">
+          <el-input
+            v-model="form.pendingReason"
+            type="textarea"
+            :rows="2"
+            placeholder="该古树还有挂账待办未收掉，必须写明原因（如招标延期、材料未到、天气原因等）"
+          />
+        </el-form-item>
+        <el-alert
+          v-if="blockingMeasures.length > 0"
+          type="error"
+          show-icon
+          :closable="false"
+          class="mb-10"
+          :title="`该古树还有 ${blockingMeasures.length} 条复评挂账待办未收掉，需先填写「未落实原因」才能保存`"
+        >
+          <div class="blocking-list">
+            <div v-for="measure in blockingMeasures" :key="measure.id" class="blocking-item">
+              <el-tag size="small" type="warning" effect="dark">{{ measure.state }}</el-tag>
+              <span>{{ measure.type }} · 挂账自 {{ reviewDateById[measure.sourceReviewId] ?? '未知日期' }} 复评</span>
+            </div>
+          </div>
+        </el-alert>
+        <el-alert
+          v-else-if="linkedMeasuresOfEditing.length > 0"
+          type="info"
+          show-icon
+          :closable="false"
+          class="mb-10"
+          title="本次复评已在措施台账挂过待办"
+          :description="`当前状态：${linkedMeasuresOfEditing.map((m) => m.state).join('、')}；保存后会按古树 / 类型 / 日期同步该待办。`"
+        />
         <el-alert
           :type="needFollowUp ? 'error' : 'info'"
           show-icon
           :closable="false"
-          :title="needFollowUp ? `长势为「${form.vigor}」，后续措施为必填项` : '长势良好，后续措施为选填项'"
-          description="长势为衰弱或濒危时，必须填写后续措施才能保存，否则复评校验会拦截。"
+          :title="
+            form.followUpType === ''
+              ? (needFollowUp ? `长势为「${form.vigor}」，必须填写后续措施并选择措施类型` : '长势良好，后续措施为选填项')
+              : `保存后将在措施台账挂一条「${form.followUpType}」计划待办，指向本次复评`
+         "
+          description="待办状态为「计划 / 实施中」时一直挂起，标记「已完成」才收掉，退回计划 / 实施中会重新挂起；措施在台账页落实与跟踪。"
         />
       </el-form>
       <template #footer>
@@ -506,6 +665,28 @@ function handleFilterChange(key: string, value: string): void {
 .cell-sub {
   font-size: 12px;
   color: #8c8479;
+}
+
+.linked-tag {
+  margin-left: 6px;
+}
+
+.mb-10 {
+  margin-bottom: 10px;
+}
+
+.blocking-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.blocking-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
 }
 
 .timeline-sub {

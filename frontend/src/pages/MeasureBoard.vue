@@ -14,6 +14,7 @@ import { useIdbTable } from '@/hooks/useIdbTable'
 import { useMeasureStore } from '@/stores/measureStore'
 import { useTreeStore } from '@/stores/treeStore'
 import { db } from '@/utils/db'
+import { isOpenLinkedMeasure, laterReviewCount } from '@/utils/followUp'
 import {
   MEASURE_STATE_OPTIONS,
   MEASURE_TYPE_OPTIONS,
@@ -76,8 +77,27 @@ const stats = computed(() => {
   const total = rows.value.length
   const done = rows.value.filter((row) => row.state === '已完成').length
   const pending = rows.value.filter((row) => row.state !== '已完成').length
-  return { total, done, pending, donePct: total === 0 ? 0 : Math.round((done / total) * 1000) / 10 }
+  const linkedPending = rows.value.filter((row) => isOpenLinkedMeasure(row)).length
+  const overdue = treeStore.overdueLinkedTodos.length
+  return {
+    total,
+    done,
+    pending,
+    linkedPending,
+    overdue,
+    donePct: total === 0 ? 0 : Math.round((done / total) * 1000) / 10,
+  }
 })
+
+const reviewDateById = computed<Record<string, string>>(() =>
+  Object.fromEntries(treeStore.reviews.map((row) => [row.id, row.date]))
+)
+
+/** 该待办距来源复评之后又做过的复评次数（≥2 高亮） */
+function laterReviewsOf(row: Measure): number {
+  if (row.sourceReviewId === '') return 0
+  return laterReviewCount(row, treeStore.reviews)
+}
 
 onMounted(() => {
   void treeStore.loadAll()
@@ -179,6 +199,22 @@ function handleFilterChange(key: string, value: string): void {
     <div class="stat-row">
       <StatBadge label="措施总数" :value="stats.total" suffix="项" tone="primary" icon="Histogram" />
       <StatBadge label="待办措施" :value="stats.pending" suffix="项" tone="warning" icon="Warning" />
+      <StatBadge
+        label="复评挂账未收"
+        :value="stats.linkedPending"
+        suffix="项"
+        :tone="stats.linkedPending > 0 ? 'warning' : 'success'"
+        icon="Warning"
+        hint="由长势复评自动挂出、状态还不是「已完成」的待办"
+      />
+      <StatBadge
+        label="跨两次复评未收"
+        :value="stats.overdue"
+        suffix="项"
+        :tone="stats.overdue > 0 ? 'danger' : 'success'"
+        icon="Warning"
+        hint="来源复评之后又做了 ≥ 2 次复评仍未完成（古树档案页单列）"
+      />
       <StatBadge label="已完成" :value="stats.done" suffix="项" tone="success" icon="DataLine" />
       <StatBadge
         label="完成率"
@@ -189,6 +225,15 @@ function handleFilterChange(key: string, value: string): void {
       />
       <StatBadge label="筛选结果" :value="filtered.length" suffix="项" tone="info" icon="TrendCharts" size="small" />
     </div>
+
+    <el-alert
+      v-if="stats.overdue > 0"
+      type="error"
+      show-icon
+      :closable="false"
+      class="mb-14"
+      :title="`有 ${stats.overdue} 项复评挂账待办隔了两次复评还没完成，请尽快落实并在台账推进状态`"
+    />
 
     <el-card shadow="never">
       <template #header>
@@ -280,6 +325,25 @@ function handleFilterChange(key: string, value: string): void {
         <el-table-column label="措施类型" width="130">
           <template #default="{ row }">
             <el-tag type="success" effect="light">{{ row.type }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="台账来源" min-width="170">
+          <template #default="{ row }">
+            <el-tag v-if="row.sourceReviewId === ''" type="info" size="small" effect="plain">台账自行登记</el-tag>
+            <div v-else class="cell-stack">
+              <el-tag type="warning" size="small" effect="dark">复评挂账待办</el-tag>
+              <span class="cell-sub">
+                对应复评：{{ reviewDateById[row.sourceReviewId] ?? '（复评已删除）' }}
+              </span>
+              <el-tag
+                v-if="laterReviewsOf(row) >= 2 && row.state !== '已完成'"
+                type="danger"
+                size="small"
+                effect="plain"
+              >
+                已隔 {{ laterReviewsOf(row) }} 次复评未收
+              </el-tag>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="实施日期" width="180">
@@ -411,7 +475,8 @@ function handleFilterChange(key: string, value: string): void {
           type="info"
           show-icon
           :closable="false"
-          title="状态选择「已完成」时，会自动把该古树的最近复壮日期回写为上面的实施日期，并进入复评待办。"
+          title="状态选择「已完成」时，会自动把该古树的最近复壮日期回写为上面的实施日期。"
+          description="复评保存时挂出的待办也在本台账跟踪：标记「已完成」才收掉，退回「计划 / 实施中」会重新挂起。"
         />
       </el-form>
       <template #footer>
@@ -427,6 +492,10 @@ function handleFilterChange(key: string, value: string): void {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
+  margin-bottom: 14px;
+}
+
+.mb-14 {
   margin-bottom: 14px;
 }
 

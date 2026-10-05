@@ -80,16 +80,27 @@ export async function seedDatabase(): Promise<void> {
     wrap<Survey>({ id: 'survey-c3', treeId: SEED_IDS.treeC, date: '2026-07-20', heightM: 9.7, dbhCm: 63.4, crownM: 6.9, leanDeg: 12.8, hollowCount: 5, siteNote: '铺装' }),
   ]
 
-  // ---------------- 复壮措施（每棵 2–3 条，覆盖三种状态） ----------------
+  // ---------------- 复壮措施（含复评自动挂账的待办，sourceReviewId 指回来源复评） ----------------
   const measures: Measure[] = [
-    wrap<Measure>({ id: 'measure-a1', treeId: SEED_IDS.treeA, type: '换土', date: '2024-04-10', material: '基质土 6 m³ + 草炭土 2 m³', operator: '王建军', state: '已完成' }),
-    wrap<Measure>({ id: 'measure-a2', treeId: SEED_IDS.treeA, type: '树洞修补', date: '2025-09-12', material: '防腐树脂 + 木栓填充', operator: '李慧', state: '已完成' }),
-    wrap<Measure>({ id: 'measure-a3', treeId: SEED_IDS.treeA, type: '透气', date: '2026-03-20', material: '透气砖 12 块 + 通气管 4 根', operator: '张勇', state: '实施中' }),
-    wrap<Measure>({ id: 'measure-b1', treeId: SEED_IDS.treeB, type: '换土', date: '2024-04-15', material: '腐叶土 5 m³ + 河沙 1 m³', operator: '赵鹏', state: '已完成' }),
-    wrap<Measure>({ id: 'measure-b2', treeId: SEED_IDS.treeB, type: '施肥', date: '2026-03-28', material: '有机肥 80 kg + 复合肥 15 kg', operator: '赵鹏', state: '已完成' }),
-    wrap<Measure>({ id: 'measure-b3', treeId: SEED_IDS.treeB, type: '透气', date: '2026-06-10', material: '通气管 6 根', operator: '孙晓', state: '计划' }),
-    wrap<Measure>({ id: 'measure-c1', treeId: SEED_IDS.treeC, type: '树洞修补', date: '2026-04-11', material: '不锈钢网 + 防腐树脂', operator: '周敏', state: '已完成' }),
-    wrap<Measure>({ id: 'measure-c2', treeId: SEED_IDS.treeC, type: '病虫害防治', date: '2026-05-06', material: '生物制剂 2 次施药', operator: '周敏', state: '计划' }),
+    wrap<Measure>({ id: 'measure-a1', treeId: SEED_IDS.treeA, type: '换土', date: '2024-04-10', material: '基质土 6 m³ + 草炭土 2 m³', operator: '王建军', state: '已完成', sourceReviewId: '' }),
+    wrap<Measure>({ id: 'measure-a2', treeId: SEED_IDS.treeA, type: '树洞修补', date: '2025-09-12', material: '防腐树脂 + 木栓填充', operator: '李慧', state: '已完成', sourceReviewId: '' }),
+    wrap<Measure>({ id: 'measure-a3', treeId: SEED_IDS.treeA, type: '透气', date: '2026-03-20', material: '透气砖 12 块 + 通气管 4 根', operator: '张勇', state: '实施中', sourceReviewId: '' }),
+    wrap<Measure>({ id: 'measure-b1', treeId: SEED_IDS.treeB, type: '换土', date: '2024-04-15', material: '腐叶土 5 m³ + 河沙 1 m³', operator: '赵鹏', state: '已完成', sourceReviewId: '' }),
+    wrap<Measure>({ id: 'measure-b2', treeId: SEED_IDS.treeB, type: '施肥', date: '2026-03-28', material: '有机肥 80 kg + 复合肥 15 kg', operator: '赵鹏', state: '已完成', sourceReviewId: '' }),
+    wrap<Measure>({ id: 'measure-b3', treeId: SEED_IDS.treeB, type: '透气', date: '2026-06-10', material: '通气管 6 根', operator: '孙晓', state: '计划', sourceReviewId: '' }),
+    // 2026-07-22 复评挂出的树洞修补待办，尚未落实
+    wrap<Measure>({ id: 'measure-b4', treeId: SEED_IDS.treeB, type: '树洞修补', date: '2026-07-22', material: '长势复评（2026-07-22）后续措施：秋季安排树洞修补与树盘透气改造，并加强根区水分管理。', operator: '', state: '计划', sourceReviewId: 'review-b2' }),
+    // 2026-08-30 衰弱复评挂出的透气待办
+    wrap<Measure>({ id: 'measure-b5', treeId: SEED_IDS.treeB, type: '透气', date: '2026-08-30', material: '长势复评（2026-08-30）后续措施：树盘透气改造，加强根区水分管理。', operator: '', state: '计划', sourceReviewId: 'review-b3' }),
+    // review-c1 挂出的树洞修补，已于 2026-04-11 完成（待办收掉，留痕）
+    wrap<Measure>({ id: 'measure-c1', treeId: SEED_IDS.treeC, type: '树洞修补', date: '2026-04-11', material: '不锈钢网 + 防腐树脂（落实 2024-08-28 复评挂账）', operator: '周敏', state: '已完成', sourceReviewId: 'review-c1' }),
+    wrap<Measure>({ id: 'measure-c2', treeId: SEED_IDS.treeC, type: '病虫害防治', date: '2026-05-06', material: '生物制剂 2 次施药', operator: '周敏', state: '计划', sourceReviewId: '' }),
+    // review-c2（2025-09-05 濒危复评）挂出的换土待办，截至 2026-09 仍在实施中 → 已隔 2 次复评未收
+    wrap<Measure>({ id: 'measure-c3', treeId: SEED_IDS.treeC, type: '换土', date: '2025-09-05', material: '长势复评（2025-09-05）后续措施：根区换土、透气与病虫害综合防治。', operator: '周敏', state: '实施中', sourceReviewId: 'review-c2' }),
+    // review-c3 挂出的透气待办，隔 1 次复评（尚未进入跨两次清单）
+    wrap<Measure>({ id: 'measure-c4', treeId: SEED_IDS.treeC, type: '透气', date: '2026-07-20', material: '长势复评（2026-07-20）后续措施：年度复壮计划中保留透气措施。', operator: '', state: '计划', sourceReviewId: 'review-c3' }),
+    // 最新一次复评新挂出的树洞修补待办
+    wrap<Measure>({ id: 'measure-c5', treeId: SEED_IDS.treeC, type: '树洞修补', date: '2026-09-12', material: '长势复评（2026-09-12）后续措施：主枝残留空洞修补防腐。', operator: '', state: '计划', sourceReviewId: 'review-c4' }),
   ]
 
   // ---------------- 加固件（含超周期未检查的样本） ----------------
@@ -101,15 +112,17 @@ export async function seedDatabase(): Promise<void> {
     wrap<Support>({ id: 'support-c2', treeId: SEED_IDS.treeC, type: '支撑杆', installDate: '2022-05-10', checkCycleMon: 12, lastCheckDate: '2026-05-08' }),
   ]
 
-  // ---------------- 长势复评（衰弱 / 濒危样本均带后续措施） ----------------
+  // ---------------- 长势复评（衰弱 / 濒危样本均带后续措施并挂台账待办） ----------------
   const reviews: Review[] = [
-    wrap<Review>({ id: 'review-a1', treeId: SEED_IDS.treeA, date: '2024-06-20', vigor: '一般', trend: '下降', conclusion: '树冠外围枝条略有回枯，整体长势中等偏下。', followUp: '' }),
-    wrap<Review>({ id: 'review-a2', treeId: SEED_IDS.treeA, date: '2026-06-18', vigor: '一般', trend: '好转', conclusion: '树洞修补后新梢抽发正常，冠幅稳定。', followUp: '' }),
-    wrap<Review>({ id: 'review-b1', treeId: SEED_IDS.treeB, date: '2024-07-25', vigor: '旺盛', trend: '持平', conclusion: '叶片浓绿，年生长量处于正常区间。', followUp: '' }),
-    wrap<Review>({ id: 'review-b2', treeId: SEED_IDS.treeB, date: '2026-07-22', vigor: '一般', trend: '下降', conclusion: '新增空洞 1 处，树势较上次略有回落。', followUp: '2026 年秋季安排树洞修补与树盘透气改造，并加强根区水分管理。' }),
-    wrap<Review>({ id: 'review-c1', treeId: SEED_IDS.treeC, date: '2024-08-28', vigor: '衰弱', trend: '下降', conclusion: '树冠稀疏，倾斜度超过 10 度，立地长期积水。', followUp: '设置拉纤加固并开挖排水盲沟，同时安排树洞修补。' }),
-    wrap<Review>({ id: 'review-c2', treeId: SEED_IDS.treeC, date: '2025-09-05', vigor: '濒危', trend: '下降', conclusion: '主枝皮层开裂，根系呼吸受阻，长势濒危。', followUp: '列入重点抢救名单，实施换土、透气与病虫害综合防治，必要时设置支撑杆。' }),
-    wrap<Review>({ id: 'review-c3', treeId: SEED_IDS.treeC, date: '2026-07-20', vigor: '衰弱', trend: '好转', conclusion: '排水改造后积水缓解，新梢萌发量回升。', followUp: '继续按季度监测倾斜度与空洞变化，年度复壮计划中保留透气措施。' }),
+    wrap<Review>({ id: 'review-a1', treeId: SEED_IDS.treeA, date: '2024-06-20', vigor: '一般', trend: '下降', conclusion: '树冠外围枝条略有回枯，整体长势中等偏下。', followUp: '', followUpType: '', pendingReason: '' }),
+    wrap<Review>({ id: 'review-a2', treeId: SEED_IDS.treeA, date: '2026-06-18', vigor: '一般', trend: '好转', conclusion: '树洞修补后新梢抽发正常，冠幅稳定。', followUp: '', followUpType: '', pendingReason: '' }),
+    wrap<Review>({ id: 'review-b1', treeId: SEED_IDS.treeB, date: '2024-07-25', vigor: '旺盛', trend: '持平', conclusion: '叶片浓绿，年生长量处于正常区间。', followUp: '', followUpType: '', pendingReason: '' }),
+    wrap<Review>({ id: 'review-b2', treeId: SEED_IDS.treeB, date: '2026-07-22', vigor: '一般', trend: '下降', conclusion: '新增空洞 1 处，树势较上次略有回落。', followUp: '2026 年秋季安排树洞修补与树盘透气改造，并加强根区水分管理。', followUpType: '树洞修补', pendingReason: '' }),
+    wrap<Review>({ id: 'review-b3', treeId: SEED_IDS.treeB, date: '2026-08-30', vigor: '衰弱', trend: '下降', conclusion: '空洞扩展至 2 处，秋梢短弱，需在落叶季前完成修补。', followUp: '树盘增设通气管并加强根区水分管理，树洞修补并入秋季抢险批次。', followUpType: '透气', pendingReason: '' }),
+    wrap<Review>({ id: 'review-c1', treeId: SEED_IDS.treeC, date: '2024-08-28', vigor: '衰弱', trend: '下降', conclusion: '树冠稀疏，倾斜度超过 10 度，立地长期积水。', followUp: '设置拉纤加固并开挖排水盲沟，同时安排树洞修补。', followUpType: '树洞修补', pendingReason: '' }),
+    wrap<Review>({ id: 'review-c2', treeId: SEED_IDS.treeC, date: '2025-09-05', vigor: '濒危', trend: '下降', conclusion: '主枝皮层开裂，根系呼吸受阻，长势濒危。', followUp: '列入重点抢救名单，实施换土、透气与病虫害综合防治，必要时设置支撑杆。', followUpType: '换土', pendingReason: '' }),
+    wrap<Review>({ id: 'review-c3', treeId: SEED_IDS.treeC, date: '2026-07-20', vigor: '衰弱', trend: '好转', conclusion: '排水改造后积水缓解，新梢萌发量回升。', followUp: '继续按季度监测倾斜度与空洞变化，年度复壮计划中保留透气措施。', followUpType: '透气', pendingReason: '换土抢救工程因古树保护专家论证流程延期，已重新排入秋季施工计划。' }),
+    wrap<Review>({ id: 'review-c4', treeId: SEED_IDS.treeC, date: '2026-09-12', vigor: '衰弱', trend: '持平', conclusion: '新梢量与上期持平，主枝残留空洞仍有扩大趋势，倾斜度稳定。', followUp: '完成主枝残留空洞修补与防腐，并跟踪换土工程施工进度。', followUpType: '树洞修补', pendingReason: '换土工程招标流标一次，预计 10 月中旬进场；透气材料已到货待铺装。' }),
   ]
 
   await db.transaction('rw', db.trees, db.surveys, db.measures, db.supports, db.reviews, async () => {

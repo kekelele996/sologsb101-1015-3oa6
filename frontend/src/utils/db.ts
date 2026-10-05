@@ -8,20 +8,20 @@
 import Dexie, { type Table } from 'dexie'
 import type { Tree } from '../types/tree'
 import type { Survey } from '../types/survey'
-import type { Measure, MeasureState } from '../types/measure'
+import type { Measure, MeasureState, MeasureType } from '../types/measure'
 import type { Support } from '../types/support'
 import type { Review } from '../types/review'
-import { nowIso, today } from './id'
+import { nowIso, today, uuid } from './id'
 import { seedDatabase } from './seed'
 
 /** 数据库名 */
 export const DB_NAME = 'gbheritagetree'
 
 /** 当前数据结构版本号（每次调整字段结构必须 +1 并补迁移） */
-export const DB_SCHEMA_VERSION = 2
+export const DB_SCHEMA_VERSION = 3
 
 /** 数据行结构修订号 */
-export const ROW_REVISION = 2
+export const ROW_REVISION = 3
 
 class HeritageTreeDatabase extends Dexie {
   trees!: Table<Tree, string>
@@ -80,6 +80,30 @@ class HeritageTreeDatabase extends Dexie {
         await tx.table('supports').toCollection().modify((row: Record<string, unknown>) => {
           if (typeof row.lastCheckDate !== 'string') row.lastCheckDate = ''
           if (typeof row.checkCycleMon !== 'number') row.checkCycleMon = 12
+        })
+      })
+
+    // ---------- v3：复评与复壮措施挂账联动 ----------
+    this.version(DB_SCHEMA_VERSION)
+      .stores({
+        trees: 'id, code, species, protectLevel, ageYears, createdAt, updatedAt, owner',
+        surveys: 'id, treeId, [treeId+date], date, siteNote',
+        // sourceReviewId 索引：按「对应哪次复评」快速找回挂账待办
+        measures: 'id, treeId, type, state, date, operator, sourceReviewId',
+        supports: 'id, treeId, type, installDate, lastCheckDate',
+        reviews: 'id, treeId, date, vigor, trend',
+      })
+      .upgrade(async (tx) => {
+        // 迁移 1：措施补齐挂账来源（存量行均为自行登记）
+        await tx.table('measures').toCollection().modify((row: Record<string, unknown>) => {
+          if (typeof row.sourceReviewId !== 'string') row.sourceReviewId = ''
+          row.revision = ROW_REVISION
+        })
+        // 迁移 2：复评补齐「后续措施类型」与「未落实原因」
+        await tx.table('reviews').toCollection().modify((row: Record<string, unknown>) => {
+          if (typeof row.followUpType !== 'string') row.followUpType = ''
+          if (typeof row.pendingReason !== 'string') row.pendingReason = ''
+          row.revision = ROW_REVISION
         })
       })
   }
@@ -236,6 +260,86 @@ export async function putReview(row: Review): Promise<void> {
   await db.reviews.put({ ...row, updatedAt: nowIso(), revision: ROW_REVISION })
 }
 
+/**
+ * 保存复评并联动复壮措施台账（同一事务）：
+ * - draft.followUpType 非空 → 在台账挂一条同类型「计划」待办，sourceReviewId 指回本次复评；
+ *   已有挂账待办则同步古树 / 类型 / 日期（已完成的待办不再改动，留痕）；
+ * - followUpType 为空且挂账待办仍未完成 → 撤销该待办；已完成的保留作为落实留痕。
+ * editingId 为空表示新建（由调用方先放好新 id）。
+ */
+export async function saveReviewWithFollowUp(row: Review): Promise<{ linkedCreated: boolean }> {
+  return db.transaction('rw', db.reviews, db.measures, async () => {
+    await db.reviews.put({ ...row, updatedAt: nowIso(), revision: ROW_REVISION })
+    const linked = await db.measures.where('sourceReviewId').equals(row.id).toArray()
+    const pending = linked.filter((measure) => measure.state !== '已完成')
+
+    if (row.followUpType === '') {
+      // 不再挂账：未完成的待办撤销，已完成的留痕保留
+      await Promise.all(pending.map((measure) => db.measures.delete(measure.id)))
+      return { linkedCreated: false }
+    }
+
+    if (pending.length > 0) {
+      // 同步既有待办（保留材料 / 负责人等已填内容）
+      await Promise.all(
+        pending.map((measure) =>
+          db.measures.update(measure.id, {
+            treeId: row.treeId,
+            type: row.followUpType as MeasureType,
+            date: row.date,
+            updatedAt: nowIso(),
+            revision: ROW_REVISION,
+          }),
+        ),
+      )
+      return { linkedCreated: false }
+    }
+
+    if (linked.length > 0) {
+      // 待办此前已完成（收掉过），不重复挂账
+      return { linkedCreated: false }
+    }
+
+    const stamp = nowIso()
+    await db.measures.put({
+      id: uuid('measure'),
+      treeId: row.treeId,
+      type: row.followUpType,
+      date: row.date,
+      material: `长势复评（${row.date}）后续措施：${row.followUp}`,
+      operator: '',
+      state: '计划',
+      sourceReviewId: row.id,
+      createdAt: stamp,
+      updatedAt: stamp,
+      revision: ROW_REVISION,
+    })
+    return { linkedCreated: true }
+  })
+}
+
+/**
+ * 删除复评并处理其挂账待办：
+ * 未完成的待办随复评一并撤销；已完成的待办解除关联（sourceReviewId 置空），保留落实记录。
+ */
+export async function deleteReviewWithLinkedMeasures(reviewId: string): Promise<void> {
+  await db.transaction('rw', db.reviews, db.measures, async () => {
+    const linked = await db.measures.where('sourceReviewId').equals(reviewId).toArray()
+    for (const measure of linked) {
+      if (measure.state === '已完成') {
+        await db.measures.update(measure.id, {
+          sourceReviewId: '',
+          updatedAt: nowIso(),
+          revision: ROW_REVISION,
+        })
+      } else {
+        await db.measures.delete(measure.id)
+      }
+    }
+    await db.reviews.delete(reviewId)
+  })
+}
+
 export async function removeReview(id: string): Promise<void> {
   await db.reviews.delete(id)
 }
@@ -277,9 +381,24 @@ export async function importSnapshot(snapshot: DatabaseSnapshot): Promise<void> 
     ])
     await db.trees.bulkPut(snapshot.trees.map((row) => ({ ...row, revision: ROW_REVISION })))
     await db.surveys.bulkPut(snapshot.surveys.map((row) => ({ ...row, revision: ROW_REVISION })))
-    await db.measures.bulkPut(snapshot.measures.map((row) => ({ ...row, revision: ROW_REVISION })))
+    await db.measures.bulkPut(
+      // 兼容 v2 及更早存档：挂账来源缺省为空串（自行登记）
+      snapshot.measures.map((row) => ({
+        ...row,
+        sourceReviewId: typeof row.sourceReviewId === 'string' ? row.sourceReviewId : '',
+        revision: ROW_REVISION,
+      })),
+    )
     await db.supports.bulkPut(snapshot.supports.map((row) => ({ ...row, revision: ROW_REVISION })))
-    await db.reviews.bulkPut(snapshot.reviews.map((row) => ({ ...row, revision: ROW_REVISION })))
+    await db.reviews.bulkPut(
+      // 兼容 v2 及更早存档：后续措施类型 / 未落实原因缺省为空串
+      snapshot.reviews.map((row) => ({
+        ...row,
+        followUpType: typeof row.followUpType === 'string' ? row.followUpType : '',
+        pendingReason: typeof row.pendingReason === 'string' ? row.pendingReason : '',
+        revision: ROW_REVISION,
+      })),
+    )
   })
 }
 
