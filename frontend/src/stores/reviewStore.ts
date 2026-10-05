@@ -1,12 +1,21 @@
 /**
  * 长势复评状态管理（Pinia）
  * 维护长势筛选条件与复评结论派生值；长势为衰弱 / 濒危时强制填写后续措施。
+ * 复评保存即在措施台账挂一条同类型待办；该树还有未收挂账待办时，
+ * 必须先写清未落实原因才允许再保存复评。
  */
 import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import type { Review, ReviewDraft, Trend, Vigor } from '../types/review'
 import { VIGOR_NEED_FOLLOW_UP, VIGOR_OPTIONS } from '../types/review'
-import { db, initDatabase, putReview, removeReview } from '../utils/db'
+import {
+  createReviewWithFollowUp,
+  db,
+  initDatabase,
+  removeReview,
+  updateReviewWithFollowUp,
+} from '../utils/db'
+import { openFollowUpsOf } from '../utils/followUp'
 import { nowIso, uuid } from '../utils/id'
 import { useTreeStore } from './treeStore'
 
@@ -56,13 +65,39 @@ export const useReviewStore = defineStore('review', () => {
   /** 需要填写后续措施的长势等级 */
   const requireFollowUp = (vigor: Vigor): boolean => VIGOR_NEED_FOLLOW_UP.includes(vigor)
 
-  /** 校验复评表单：衰弱 / 濒危必须填写后续措施 */
-  function validate(draft: ReviewDraft): ReviewValidation {
+  /** 该株古树尚未收掉的复评挂账待办（编辑复评时排除其自身挂的那条） */
+  async function blockingFollowUps(treeId: string, excludeReviewId: string | null): Promise<number> {
+    const measures = await db.measures.where('treeId').equals(treeId).toArray()
+    return openFollowUpsOf(measures, treeId).filter(
+      (row) => excludeReviewId === null || row.sourceReviewId !== excludeReviewId,
+    ).length
+  }
+
+  /**
+   * 校验复评表单：
+   * 1. 衰弱 / 濒危必须填写后续措施；
+   * 2. 必须挑选挂账措施类型；
+   * 3. 该树还有未收掉的挂账待办时，必须写清未落实原因。
+   */
+  async function validate(
+    draft: ReviewDraft,
+    excludeReviewId: string | null = null,
+  ): Promise<ReviewValidation> {
+    if (draft.conclusion.trim() === '') {
+      return { ok: false, message: '请填写复评结论。' }
+    }
     if (requireFollowUp(draft.vigor) && draft.followUp.trim() === '') {
       return { ok: false, message: `长势为「${draft.vigor}」时必须填写后续措施，否则无法保存。` }
     }
-    if (draft.conclusion.trim() === '') {
-      return { ok: false, message: '请填写复评结论。' }
+    if (draft.followUpType.trim() === '') {
+      return { ok: false, message: '请挑选本次复评的挂账措施类型，保存后会在措施台账挂一条同类型待办。' }
+    }
+    const blocking = await blockingFollowUps(draft.treeId, excludeReviewId)
+    if (blocking > 0 && draft.pendingReason.trim() === '') {
+      return {
+        ok: false,
+        message: `该株古树还有 ${blocking} 条复评挂账待办未收掉，请先写清未落实原因后再保存本次复评。`,
+      }
     }
     return { ok: true, message: '' }
   }
@@ -89,7 +124,7 @@ export const useReviewStore = defineStore('review', () => {
   }
 
   async function createReview(draft: ReviewDraft): Promise<Review | null> {
-    const check = validate(draft)
+    const check = await validate(draft)
     if (!check.ok) {
       lastMessage.value = check.message
       return null
@@ -103,25 +138,27 @@ export const useReviewStore = defineStore('review', () => {
       trend: draft.trend,
       conclusion: draft.conclusion.trim(),
       followUp: draft.followUp.trim(),
+      followUpType: draft.followUpType,
+      pendingReason: draft.pendingReason.trim(),
       createdAt: stamp,
       updatedAt: stamp,
-      revision: 2,
+      revision: 3,
     }
-    await putReview(row)
+    const saved = await createReviewWithFollowUp(row)
     revision.value += 1
-    lastMessage.value = `已登记 ${row.date} 长势复评：${row.vigor}（${row.trend}）`
-    return row
+    lastMessage.value = `已登记 ${row.date} 长势复评：${row.vigor}（${row.trend}），措施台账已挂「${row.followUpType}」待办`
+    return saved
   }
 
   async function updateReview(reviewId: string, draft: ReviewDraft): Promise<ReviewValidation> {
-    const check = validate(draft)
+    const check = await validate(draft, reviewId)
     if (!check.ok) {
       lastMessage.value = check.message
       return check
     }
     const existing = await db.reviews.get(reviewId)
     if (!existing) return { ok: false, message: '复评记录不存在' }
-    await putReview({
+    await updateReviewWithFollowUp({
       ...existing,
       treeId: draft.treeId,
       date: draft.date,
@@ -129,9 +166,11 @@ export const useReviewStore = defineStore('review', () => {
       trend: draft.trend,
       conclusion: draft.conclusion.trim(),
       followUp: draft.followUp.trim(),
+      followUpType: draft.followUpType,
+      pendingReason: draft.pendingReason.trim(),
     })
     revision.value += 1
-    lastMessage.value = '复评记录已更新'
+    lastMessage.value = '复评记录已更新，挂账待办已同步'
     return { ok: true, message: '' }
   }
 
@@ -153,6 +192,7 @@ export const useReviewStore = defineStore('review', () => {
     vigorStats,
     followUpMissing,
     requireFollowUp,
+    blockingFollowUps,
     validate,
     init,
     setFilters,

@@ -11,9 +11,10 @@ import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import FilterBar from '@/components/common/FilterBar.vue'
 import StatBadge from '@/components/common/StatBadge.vue'
 import { useIdbTable } from '@/hooks/useIdbTable'
-import { useMeasureStore } from '@/stores/measureStore'
+import { useMeasureStore, type MeasureSourceFilter } from '@/stores/measureStore'
 import { useTreeStore } from '@/stores/treeStore'
 import { db } from '@/utils/db'
+import { isOpenFollowUp, isReviewLinked } from '@/utils/followUp'
 import {
   MEASURE_STATE_OPTIONS,
   MEASURE_TYPE_OPTIONS,
@@ -22,11 +23,13 @@ import {
   type MeasureState,
   type MeasureType,
 } from '@/types/measure'
+import type { Review } from '@/types/review'
 
 const treeStore = useTreeStore()
 const measureStore = useMeasureStore()
 
 const { rows, loading } = useIdbTable<Measure>(db.measures, { sortByUpdatedAt: false })
+const { rows: reviewRows } = useIdbTable<Review>(db.reviews, { sortByUpdatedAt: false })
 
 const dialogVisible = ref(false)
 const submitting = ref(false)
@@ -55,6 +58,15 @@ const treeLabel = computed<Record<string, string>>(() =>
   Object.fromEntries(treeStore.trees.map((tree) => [tree.id, `${tree.code} ${tree.species}`]))
 )
 
+/** 挂账来源复评 id → 复评记录 */
+const reviewById = computed<Map<string, Review>>(() => new Map(reviewRows.value.map((row) => [row.id, row])))
+
+/** 挂账来源标签：复评 YYYY-MM-DD */
+function sourceLabel(row: Measure): string {
+  const review = reviewById.value.get(row.sourceReviewId)
+  return review === undefined ? '复评挂账' : `复评 ${review.date}`
+}
+
 const filtered = computed<Measure[]>(() => {
   const keyword = measureStore.filters.keyword.trim().toLowerCase()
   return rows.value
@@ -62,6 +74,8 @@ const filtered = computed<Measure[]>(() => {
       if (measureStore.filters.treeId !== 'all' && row.treeId !== measureStore.filters.treeId) return false
       if (measureStore.filters.type !== 'all' && row.type !== measureStore.filters.type) return false
       if (measureStore.filters.state !== 'all' && row.state !== measureStore.filters.state) return false
+      if (measureStore.filters.source === 'review' && !isReviewLinked(row)) return false
+      if (measureStore.filters.source === 'manual' && isReviewLinked(row)) return false
       if (keyword === '') return true
       return (
         (treeLabel.value[row.treeId] ?? '').toLowerCase().includes(keyword) ||
@@ -76,7 +90,14 @@ const stats = computed(() => {
   const total = rows.value.length
   const done = rows.value.filter((row) => row.state === '已完成').length
   const pending = rows.value.filter((row) => row.state !== '已完成').length
-  return { total, done, pending, donePct: total === 0 ? 0 : Math.round((done / total) * 1000) / 10 }
+  const openFollowUp = rows.value.filter((row) => isOpenFollowUp(row)).length
+  return {
+    total,
+    done,
+    pending,
+    openFollowUp,
+    donePct: total === 0 ? 0 : Math.round((done / total) * 1000) / 10,
+  }
 })
 
 onMounted(() => {
@@ -171,6 +192,7 @@ function handleFilterChange(key: string, value: string): void {
   if (key === 'treeId') measureStore.setFilters({ treeId: value })
   if (key === 'type') measureStore.setFilters({ type: value as MeasureType | 'all' })
   if (key === 'state') measureStore.setFilters({ state: value as MeasureState | 'all' })
+  if (key === 'source') measureStore.setFilters({ source: value as MeasureSourceFilter })
 }
 </script>
 
@@ -178,6 +200,14 @@ function handleFilterChange(key: string, value: string): void {
   <div>
     <div class="stat-row">
       <StatBadge label="措施总数" :value="stats.total" suffix="项" tone="primary" icon="Histogram" />
+      <StatBadge
+        label="复评挂账待办"
+        :value="stats.openFollowUp"
+        suffix="项"
+        tone="danger"
+        icon="Warning"
+        hint="复评保存后挂出、措施状态尚不是「已完成」的待办；完成后自动收掉"
+      />
       <StatBadge label="待办措施" :value="stats.pending" suffix="项" tone="warning" icon="Warning" />
       <StatBadge label="已完成" :value="stats.done" suffix="项" tone="success" icon="DataLine" />
       <StatBadge
@@ -212,11 +242,18 @@ function handleFilterChange(key: string, value: string): void {
           },
           { key: 'type', label: '措施类型', options: MEASURE_TYPE_OPTIONS as unknown as string[] },
           { key: 'state', label: '实施状态', options: MEASURE_STATE_OPTIONS as unknown as string[] },
+          {
+            key: 'source',
+            label: '来源',
+            options: ['review', 'manual'],
+            optionLabels: { review: '复评挂账', manual: '手工登记' },
+          },
         ]"
         :values="{
           treeId: measureStore.filters.treeId,
           type: measureStore.filters.type,
           state: measureStore.filters.state,
+          source: measureStore.filters.source,
         }"
         :result-text="`命中 ${filtered.length} / ${rows.length} 项`"
         @update:keyword="(value: string) => measureStore.setFilters({ keyword: value })"
@@ -282,6 +319,20 @@ function handleFilterChange(key: string, value: string): void {
             <el-tag type="success" effect="light">{{ row.type }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="来源" width="150">
+          <template #default="{ row }">
+            <el-tooltip
+              v-if="isReviewLinked(row)"
+              :content="`对着 ${sourceLabel(row)} 挂出的待办，改「已完成」才收掉`"
+              placement="top"
+            >
+              <el-tag :type="isOpenFollowUp(row) ? 'danger' : 'info'" size="small" effect="plain">
+                {{ sourceLabel(row) }}
+              </el-tag>
+            </el-tooltip>
+            <el-tag v-else type="info" size="small" effect="plain">手工登记</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="实施日期" width="180">
           <template #default="{ row }">
             <el-date-picker
@@ -304,7 +355,8 @@ function handleFilterChange(key: string, value: string): void {
               size="small"
               @update:model-value="(value: string) => measureStore.setDraft(row.id, { material: value })"
             />
-            <span v-else>{{ row.material }}</span>
+            <span v-else-if="row.material !== ''">{{ row.material }}</span>
+            <el-tag v-else type="warning" size="small" effect="plain">挂账待补</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="负责人" width="150">
@@ -315,7 +367,8 @@ function handleFilterChange(key: string, value: string): void {
               size="small"
               @update:model-value="(value: string) => measureStore.setDraft(row.id, { operator: value })"
             />
-            <span v-else>{{ row.operator }}</span>
+            <span v-else-if="row.operator !== ''">{{ row.operator }}</span>
+            <el-tag v-else type="warning" size="small" effect="plain">挂账待补</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="实施状态" width="120">
@@ -411,7 +464,8 @@ function handleFilterChange(key: string, value: string): void {
           type="info"
           show-icon
           :closable="false"
-          title="状态选择「已完成」时，会自动把该古树的最近复壮日期回写为上面的实施日期，并进入复评待办。"
+          title="此处登记的是手工措施；复评保存时会自动挂出同类型待办并标清来源复评。"
+          description="挂账待办改为「已完成」即收掉并回写古树最近复壮日期；退回「计划 / 实施中」会重新挂起。"
         />
       </el-form>
       <template #footer>

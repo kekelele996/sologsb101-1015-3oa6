@@ -29,6 +29,7 @@ import {
   leanLevel,
   type LeanLevel,
 } from '../utils/dimension'
+import { openFollowUpsOf, staleFollowUps } from '../utils/followUp'
 
 /** 古树筛选条件（关键字 + 保护级别 + 树种），由 <FilterBar> 同步到 URL query */
 export interface TreeFilters {
@@ -54,6 +55,10 @@ export interface TreeStat {
   measureCount: number
   doneMeasureCount: number
   pendingMeasureCount: number
+  /** 复评挂账待办中尚未收掉的条数 */
+  openFollowUpCount: number
+  /** 隔了两次复评仍未收掉的挂账待办条数 */
+  staleFollowUpCount: number
   supportCount: number
   /** 超周期未检查的加固件数 */
   overdueCount: number
@@ -94,6 +99,8 @@ const EMPTY_STAT: Omit<TreeStat, 'treeId'> = {
   measureCount: 0,
   doneMeasureCount: 0,
   pendingMeasureCount: 0,
+  openFollowUpCount: 0,
+  staleFollowUpCount: 0,
   supportCount: 0,
   overdueCount: 0,
   reviewCount: 0,
@@ -155,6 +162,8 @@ export const useTreeStore = defineStore('tree', () => {
         measureCount: treeMeasures.length,
         doneMeasureCount: treeMeasures.filter((row) => row.state === '已完成').length,
         pendingMeasureCount: treeMeasures.filter((row) => row.state !== '已完成').length,
+        openFollowUpCount: openFollowUpsOf(treeMeasures, tree.id).length,
+        staleFollowUpCount: staleFollowUps(measures.value, reviews.value, tree.id).length,
         supportCount: treeSupports.length,
         overdueCount: treeSupports.filter((row) => isSupportOverdue(row.lastCheckDate, row.checkCycleMon)).length,
         reviewCount: treeReviews.length,

@@ -12,6 +12,7 @@ import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import StatBadge from '@/components/common/StatBadge.vue'
 import VigorTag from '@/components/common/VigorTag.vue'
 import { useTreeStore } from '@/stores/treeStore'
+import { staleFollowUps } from '@/utils/followUp'
 import {
   PROTECT_LEVEL_OPTIONS,
   TREE_SPECIES_CANDIDATES,
@@ -64,8 +65,17 @@ const totals = computed(() => {
     return vigor === '衰弱' || vigor === '濒危'
   }).length
   const overdue = list.reduce((acc, tree) => acc + treeStore.statOf(tree.id).overdueCount, 0)
-  return { level1, weak, overdue }
+  const stale = staleFollowUps(treeStore.measures, treeStore.reviews, null)
+  return { level1, weak, overdue, staleCount: stale.length }
 })
+
+/** 隔了两次复评仍未收掉的挂账待办（全局，档案页单列） */
+const staleFollowUpRows = computed(() => staleFollowUps(treeStore.measures, treeStore.reviews, null))
+
+function treeName(treeId: string): string {
+  const tree = treeStore.trees.find((item) => item.id === treeId)
+  return tree === undefined ? '（古树已删除）' : `${tree.code} ${tree.species}`
+}
 
 onMounted(() => {
   void treeStore.loadAll()
@@ -149,9 +159,27 @@ function handleFilterChange(key: string, value: string): void {
       <StatBadge label="在档古树" :value="treeStore.trees.length" suffix="株" tone="primary" icon="Histogram" />
       <StatBadge label="一级古树" :value="totals.level1" suffix="株" tone="success" icon="DataLine" />
       <StatBadge label="衰弱/濒危" :value="totals.weak" suffix="株" tone="danger" icon="Warning" hint="最新长势为衰弱或濒危的古树" />
+      <StatBadge
+        label="跨两次复评未落实"
+        :value="totals.staleCount"
+        suffix="项"
+        :tone="totals.staleCount > 0 ? 'danger' : 'success'"
+        icon="AlarmClock"
+        hint="挂账待办在源复评之后又隔了两次及以上复评，仍未改成「已完成」"
+      />
       <StatBadge label="加固件超期" :value="totals.overdue" suffix="件" tone="warning" icon="Warning" hint="超过检查周期未检查的加固件" />
       <StatBadge label="筛选结果" :value="rows.length" suffix="株" tone="info" icon="PieChart" size="small" />
     </div>
+
+    <el-alert
+      v-if="staleFollowUpRows.length > 0"
+      type="error"
+      show-icon
+      :closable="false"
+      class="mb-14"
+      :title="`有 ${staleFollowUpRows.length} 项复评挂账待办隔了两次复评还没收掉`"
+      description="请尽快在复壮措施台账中推进实施；确需延期的，在下次复评时写清未落实原因。"
+    />
 
     <el-card shadow="never">
       <template #header>
@@ -239,8 +267,16 @@ function handleFilterChange(key: string, value: string): void {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="待办措施" width="110" align="right">
-          <template #default="{ row }">{{ treeStore.statOf(row.id).pendingMeasureCount }} 项</template>
+        <el-table-column label="待办措施" min-width="130" align="right">
+          <template #default="{ row }">
+            <div class="cell-stack" style="align-items: flex-end">
+              <span>{{ treeStore.statOf(row.id).pendingMeasureCount }} 项</span>
+              <span
+                v-if="treeStore.statOf(row.id).openFollowUpCount > 0"
+                class="cell-sub"
+              >含复评挂账 {{ treeStore.statOf(row.id).openFollowUpCount }} 项</span>
+            </div>
+          </template>
         </el-table-column>
         <el-table-column label="加固件超期" width="120" align="right">
           <template #default="{ row }">
@@ -260,6 +296,54 @@ function handleFilterChange(key: string, value: string): void {
             <el-button link type="primary" size="small" @click.stop="goSurveys(row)">树体检查</el-button>
             <el-button link type="primary" size="small" @click.stop="openEdit(row)">编辑</el-button>
             <el-button link type="danger" size="small" @click.stop="handleDelete(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <el-card v-if="staleFollowUpRows.length > 0" shadow="never" class="stale-card">
+      <template #header>
+        <div class="card-header">
+          <span class="card-header__title">隔了两次复评仍未收掉的挂账待办</span>
+          <el-button type="primary" plain @click="router.push('/measures')">去措施台账处理</el-button>
+        </div>
+      </template>
+      <el-table :data="staleFollowUpRows" row-key="measure.id" stripe>
+        <el-table-column label="古树" min-width="180">
+          <template #default="{ row }">
+            <el-link type="primary" @click="router.push(`/trees/${row.measure.treeId}/surveys`)">
+              {{ treeName(row.measure.treeId) }}
+            </el-link>
+          </template>
+        </el-table-column>
+        <el-table-column label="挂账措施" width="130">
+          <template #default="{ row }">
+            <el-tag type="danger" effect="light">{{ row.measure.type }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="来源复评" width="170">
+          <template #default="{ row }">
+            <div class="cell-stack">
+              <span>{{ row.review.date }}</span>
+              <span class="cell-sub">{{ row.review.vigor }} · {{ row.review.trend }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="已隔复评" width="120" align="center">
+          <template #default="{ row }">
+            <el-tag type="danger" size="small">{{ row.gap }} 次未收</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="当前状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="row.measure.state === '实施中' ? 'warning' : 'info'" size="small">
+              {{ row.measure.state }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="复评后续措施说明" min-width="240">
+          <template #default="{ row }">
+            <span>{{ row.review.followUp === '' ? '（未填写）' : row.review.followUp }}</span>
           </template>
         </el-table-column>
       </el-table>
@@ -356,5 +440,14 @@ function handleFilterChange(key: string, value: string): void {
 .cell-warn {
   color: #c0392b;
   font-weight: 600;
+}
+
+.mb-14 {
+  margin-bottom: 14px;
+}
+
+.stale-card {
+  margin-top: 14px;
+  border-color: #e6b8b3;
 }
 </style>

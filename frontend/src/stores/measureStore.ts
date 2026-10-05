@@ -15,16 +15,20 @@ import {
 import { nowIso, uuid } from '../utils/id'
 import { useTreeStore } from './treeStore'
 
+/** 措施来源筛选：全部 / 复评挂账 / 手工登记 */
+export type MeasureSourceFilter = 'all' | 'review' | 'manual'
+
 /** 复壮措施筛选条件 */
 export interface MeasureFilters {
   keyword: string
   treeId: string | 'all'
   type: MeasureType | 'all'
   state: MeasureState | 'all'
+  source: MeasureSourceFilter
 }
 
 export const useMeasureStore = defineStore('measure', () => {
-  const filters = reactive<MeasureFilters>({ keyword: '', treeId: 'all', type: 'all', state: 'all' })
+  const filters = reactive<MeasureFilters>({ keyword: '', treeId: 'all', type: 'all', state: 'all', source: 'all' })
   /** 每行的行内编辑草稿，key = measure id */
   const drafts = ref<Record<string, Partial<MeasureDraft>>>({})
   const selectedIds = ref<string[]>([])
@@ -47,6 +51,7 @@ export const useMeasureStore = defineStore('measure', () => {
     filters.treeId = 'all'
     filters.type = 'all'
     filters.state = 'all'
+    filters.source = 'all'
     selectedIds.value = []
   }
 
@@ -93,6 +98,7 @@ export const useMeasureStore = defineStore('measure', () => {
       material: draft.material.trim(),
       operator: draft.operator.trim(),
       state: draft.state,
+      sourceReviewId: '',
       createdAt: stamp,
       updatedAt: stamp,
       revision: 2,

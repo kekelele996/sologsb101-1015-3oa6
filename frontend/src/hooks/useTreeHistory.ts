@@ -50,13 +50,14 @@ export function buildHistory(
     })
   })
   measures.forEach((row) => {
+    const linked = row.sourceReviewId !== ''
     items.push({
       key: `measure-${row.id}`,
       kind: 'measure',
       date: row.date,
-      title: `复壮措施 · ${row.type}`,
-      detail: `材料：${row.material}；负责人：${row.operator}`,
-      badge: row.state,
+      title: `复壮措施 · ${row.type}${linked ? '（复评挂账）' : ''}`,
+      detail: `材料：${row.material || '待补'}；负责人：${row.operator || '待补'}${linked ? '；由长势复评挂出' : ''}`,
+      badge: `${linked ? '挂账 · ' : ''}${row.state}`,
     })
   })
   supports.forEach((row) => {

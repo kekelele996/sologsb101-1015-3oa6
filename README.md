@@ -42,7 +42,7 @@ docker compose up -d --build       # 改完代码后重新构建
 | 构建 | Vite 6 | 开发端口与宿主端口一致（22815） |
 | 路由 | Vue Router 4 | `createWebHistory` + 路由懒加载 |
 | 状态管理 | Pinia 2 | setup store，跨页状态集中在 store，页面只读 store |
-| 本地持久化 | Dexie 4（IndexedDB） | 库名 `gbheritagetree`，含 v1 → v2 升级迁移 |
+| 本地持久化 | Dexie 4（IndexedDB） | 库名 `gbheritagetree`，含 v1 → v2 → v3 升级迁移 |
 | 容器 | node:20-alpine → nginx:alpine | 多阶段构建，`chmod -R a+rX` 规避静态资源 403 |
 
 ---
@@ -100,28 +100,29 @@ sologsb101-1015/
 
 * **持久化方案**：IndexedDB，通过 Dexie 封装（`src/utils/db.ts`）。
 * **数据库名**：`gbheritagetree`。
-* **数据结构版本**：`DB_SCHEMA_VERSION = 2`，`version(1)` 建立全部表，`version(2)` 补齐索引并执行 `.upgrade()` 迁移：
+* **数据结构版本**：`DB_SCHEMA_VERSION = 3`，`version(1)` 建立全部表，`version(2)` 补齐索引并执行 `.upgrade()` 迁移，`version(3)` 打通复评挂账：
   * `surveys` 增加 `[treeId+date]` 复合索引、`measures` 增加 `operator` 索引、`supports` 增加 `lastCheckDate` 索引、`reviews` 增加 `trend` 索引；
   * 回填 `revision` / `createdAt` / `updatedAt`；
   * 为 `trees` 补齐 `lastMeasureDate`（最近复壮日期）回写字段；
   * 为 `reviews` 补齐 `followUp`（后续措施）字段；
-  * 为 `supports` 补齐 `lastCheckDate` 与 `checkCycleMon` 缺省值。
+  * 为 `supports` 补齐 `lastCheckDate` 与 `checkCycleMon` 缺省值；
+  * v3：`measures` 增加 `sourceReviewId`（挂账来源复评）索引；`measures` 回填 `sourceReviewId = ''`（按手工登记处理，不回溯挂账关系），`reviews` 回填 `followUpType`（挂账措施类型）与 `pendingReason`（未落实原因）。
 * **表结构**：
 
   | 表 | 主键 | 主要索引 |
   | --- | --- | --- |
   | `trees` | id | code, species, protectLevel, ageYears, createdAt, updatedAt, owner |
   | `surveys` | id | treeId, [treeId+date], date, siteNote |
-  | `measures` | id | treeId, type, state, date, operator |
+  | `measures` | id | treeId, type, state, date, operator, sourceReviewId |
   | `supports` | id | treeId, type, installDate, lastCheckDate |
   | `reviews` | id | treeId, date, vigor, trend |
 
 * **首屏演示数据**：`initDatabase()` 在打开数据库后检测 `trees` 表是否为空，为空则调用 `utils/seed.ts` 播种，
   幂等且只执行一次。播种链路为 **古树 → 树体检查 / 复壮措施 / 加固件 / 长势复评** 三层互相引用：
   * 3 株古树（京-01-0007 国槐 一级 / 京-02-0113 银杏 一级 / 京-05-0246 侧柏 二级）；
-  * 9 条树体检查（每株 3 次，树高胸径随日期递增）、8 条复壮措施（覆盖计划 / 实施中 / 已完成）、
+  * 9 条树体检查（每株 3 次，树高胸径随日期递增）、15 条复壮措施（8 条手工登记覆盖计划 / 实施中 / 已完成，7 条由复评挂账，含已收掉、挂起与跨两次复评未落实样本）、
     5 件加固件（其中 **京-01-0007 支撑杆** 与 **京-05-0246 避雷** 故意超周期未检查，用于验证高亮与提醒）、
-    7 条长势复评（含衰弱 / 濒危样本且均已填写后续措施）。
+    7 条长势复评（含衰弱 / 濒危样本，均已选挂账措施类型；**京-05-0246 2024-08-28 复评挂的「透气」待办** 隔了两次复评仍未收掉，用于验证档案页单列预警）。
   * 固定 id 如 `tree-guozijian-0007`、`tree-xiangshan-0113`、`tree-ritan-0246` 可直接用于深链验证。
 * **其他本地数据**：`localStorage` 仅保存「最近选中的古树 id」这一界面偏好，不存业务数据。
 * 删除古树会**级联清理**其下的树体检查、复壮措施、加固件与复评记录（同一 Dexie 事务内完成）。
@@ -153,5 +154,8 @@ npm run preview      # 预览 dist 产物
 * **生长量年化**：由最近两次检查的差值按实际天数折算为「每年」增量，间隔不足 30 天时退回直接差值。
 * **加固件超期**：`最近检查日期 + 检查周期（月）` 早于今天即为超期，列表自动高亮并在顶部汇总提醒；
   「登记本次检查」会把最近检查日期置为今天并解除高亮。
-* **复评强制校验**：长势为「衰弱」或「濒危」时，后续措施为必填项，未填写无法保存。
+* **复评强制校验**：长势为「衰弱」或「濒危」时，后续措施说明为必填项，未填写无法保存；每次复评都必须挑选挂账措施类型。
+* **复评挂账台账**：复评保存即在措施台账生成一条同类型「计划」待办（`sourceReviewId` 指向该次复评，材料 / 负责人留空待补）；挂账待办改为「已完成」才收掉，退回「计划 / 实施中」会重新挂起（同一 Dexie 事务内联动，编辑复评时同步未收待办的类型 / 日期；删除复评只解除挂账关系，不删除已实施措施）。
+* **未落实原因拦截**：某株古树还有未收掉的挂账待办时，再次保存复评必须先填写「未落实原因」，前端表单与 store 校验双重拦截。
+* **跨两次复评预警**：挂账待办在其来源复评之后又隔了 ≥ 2 次复评仍未收掉的，古树档案页底部单列高亮并支持一键跳转措施台账。
 * **措施回写**：复壮措施状态改为「已完成」时，若实施日期晚于古树现有最近复壮日期，则自动回写该日期。

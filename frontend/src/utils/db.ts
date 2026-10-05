@@ -11,17 +11,17 @@ import type { Survey } from '../types/survey'
 import type { Measure, MeasureState } from '../types/measure'
 import type { Support } from '../types/support'
 import type { Review } from '../types/review'
-import { nowIso, today } from './id'
+import { nowIso, today, uuid } from './id'
 import { seedDatabase } from './seed'
 
 /** 数据库名 */
 export const DB_NAME = 'gbheritagetree'
 
 /** 当前数据结构版本号（每次调整字段结构必须 +1 并补迁移） */
-export const DB_SCHEMA_VERSION = 2
+export const DB_SCHEMA_VERSION = 3
 
 /** 数据行结构修订号 */
-export const ROW_REVISION = 2
+export const ROW_REVISION = 3
 
 class HeritageTreeDatabase extends Dexie {
   trees!: Table<Tree, string>
@@ -80,6 +80,28 @@ class HeritageTreeDatabase extends Dexie {
         await tx.table('supports').toCollection().modify((row: Record<string, unknown>) => {
           if (typeof row.lastCheckDate !== 'string') row.lastCheckDate = ''
           if (typeof row.checkCycleMon !== 'number') row.checkCycleMon = 12
+        })
+      })
+
+    // ---------- v3：复评挂账复壮措施 ----------
+    // measures.sourceReviewId：挂账来源复评；reviews 补 followUpType / pendingReason
+    this.version(DB_SCHEMA_VERSION)
+      .stores({
+        trees: 'id, code, species, protectLevel, ageYears, createdAt, updatedAt, owner',
+        surveys: 'id, treeId, [treeId+date], date, siteNote',
+        measures: 'id, treeId, type, state, date, operator, sourceReviewId',
+        supports: 'id, treeId, type, installDate, lastCheckDate',
+        reviews: 'id, treeId, date, vigor, trend',
+      })
+      .upgrade(async (tx) => {
+        // 迁移 1：措施补齐挂账来源（历史数据均按手工登记处理，不回溯挂账关系）
+        await tx.table('measures').toCollection().modify((row: Record<string, unknown>) => {
+          if (typeof row.sourceReviewId !== 'string') row.sourceReviewId = ''
+        })
+        // 迁移 2：复评补齐挂账措施类型与未落实原因
+        await tx.table('reviews').toCollection().modify((row: Record<string, unknown>) => {
+          if (typeof row.followUpType !== 'string') row.followUpType = '施肥'
+          if (typeof row.pendingReason !== 'string') row.pendingReason = ''
         })
       })
   }
@@ -236,8 +258,73 @@ export async function putReview(row: Review): Promise<void> {
   await db.reviews.put({ ...row, updatedAt: nowIso(), revision: ROW_REVISION })
 }
 
+/**
+ * 新建复评并在措施台账挂一条同类型待办（同一事务）：
+ * - 挂账措施初始状态为「计划」，材料 / 负责人留空，由台账后续补录；
+ * - 措施的 sourceReviewId 指向本次复评，台账据此标注「对着哪次复评」。
+ */
+export async function createReviewWithFollowUp(row: Review): Promise<Review> {
+  const stamp = nowIso()
+  const review: Review = { ...row, createdAt: row.createdAt ?? stamp, updatedAt: stamp, revision: ROW_REVISION }
+  await db.transaction('rw', db.reviews, db.measures, async () => {
+    await db.reviews.put(review)
+    await db.measures.put({
+      id: uuid('measure'),
+      treeId: review.treeId,
+      type: review.followUpType,
+      date: review.date,
+      material: '',
+      operator: '',
+      state: '计划',
+      sourceReviewId: review.id,
+      createdAt: stamp,
+      updatedAt: stamp,
+      revision: ROW_REVISION,
+    })
+  })
+  return review
+}
+
+/**
+ * 编辑复评并同步其挂账待办（同一事务）：
+ * - 挂账措施还没收掉（计划 / 实施中）时，类型、日期、所属古树随复评一起改；
+ * - 已完成的措施视为已收档，保持不动，避免回改历史实施记录。
+ */
+export async function updateReviewWithFollowUp(row: Review): Promise<void> {
+  await db.transaction('rw', db.reviews, db.measures, async () => {
+    await db.reviews.put({ ...row, updatedAt: nowIso(), revision: ROW_REVISION })
+    const linked = await db.measures.where('sourceReviewId').equals(row.id).toArray()
+    for (const measure of linked) {
+      if (measure.state === '已完成') continue
+      await db.measures.put({
+        ...measure,
+        treeId: row.treeId,
+        type: row.followUpType,
+        date: row.date,
+        updatedAt: nowIso(),
+        revision: ROW_REVISION,
+      })
+    }
+  })
+}
+
+/**
+ * 删除复评：挂账措施不级联删除，改为解除挂账关系（sourceReviewId 置空），
+ * 已实施 / 已完成的养护动作仍留在台账里。
+ */
 export async function removeReview(id: string): Promise<void> {
-  await db.reviews.delete(id)
+  await db.transaction('rw', db.reviews, db.measures, async () => {
+    const linked = await db.measures.where('sourceReviewId').equals(id).toArray()
+    for (const measure of linked) {
+      await db.measures.put({
+        ...measure,
+        sourceReviewId: '',
+        updatedAt: nowIso(),
+        revision: ROW_REVISION,
+      })
+    }
+    await db.reviews.delete(id)
+  })
 }
 
 /* ---------------------------- 整库快照 ---------------------------- */
